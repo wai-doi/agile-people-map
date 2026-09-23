@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>アジャイル人物マップ - 学習ページ</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  main { max-width: 680px; }
+  .person { display: flex; gap: 18px; padding: 20px 0; border-top: 1px solid var(--line); }
+  /* 縦長の枠なので顔写真がほぼ切れない */
+  .person img { flex: none; width: 112px; height: 144px; object-fit: cover; border-radius: 8px; }
+  .person h2 { font-size: 17px; margin: 0 0 8px; }
+  .person h2 small { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
+  .books { margin: 0 0 8px; font-size: 13px; }
+  .achievements { margin: 0 0 10px; padding-left: 1.2em; font-size: 13px; }
+  .achievements li { margin-bottom: 3px; }
+  .person a { font-size: 12px; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="titlebar">
+    <h1>アジャイル人物マップ - 学習ページ</h1>
+    <nav>
+      <a href="index.html">パズル</a>
+      <a href="https://github.com/wai-doi/agile-people-map" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="list"></main>
+
+<footer>
+  <p>出典: 人物・著書は <a href="https://en.wikipedia.org/">英語版Wikipedia</a>、邦題は <a href="https://ndlsearch.ndl.go.jp/">国立国会図書館サーチ</a> で確認。写真は Wikimedia Commons より、表示枠に合わせてトリミングしています。</p>
+  <ul id="credits"></ul>
+</footer>
+
+<script src="people.js"></script>
+<script>
+const list = document.getElementById('list');
+
+for (const p of PEOPLE) {
+  const name = el('h2', '', p.name);
+  name.append(el('small', '', p.nameJa));
+
+  const books = el('p', 'books', p.books.map(b => `『${b}』`).join(''));
+
+  const achievements = el('ul', 'achievements');
+  for (const a of p.achievements) achievements.append(el('li', '', a));
+
+  const link = el('a', '', 'Wikipedia');
+  link.href = p.wiki;
+
+  const info = el('div');
+  info.append(name, books, achievements, link);
+
+  const person = el('article', 'person');
+  person.append(photoImg(p), info);
+  list.append(person);
+}
+
+renderCredits(document.getElementById('credits'));
+</script>
+</body>
+</html>

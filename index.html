@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>アジャイル人物マップ</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  :root {
+    --w: clamp(116px, 20vw, 180px);
+    /* 縦長の顔写真が枠に収まる高さ。下げると頭か顎が切れる */
+    --h: 200px;
+  }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 20px; }
+  #score { font-size: 14px; font-weight: 700; margin-left: 4px; }
+
+  .collabel { font-size: 12px; font-weight: 700; color: var(--muted); text-align: center; }
+  .card {
+    width: var(--w); height: var(--h);
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    overflow: hidden; cursor: grab; user-select: none;
+  }
+  .card.sel { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .card.name { display: grid; place-items: center; align-content: center; gap: 4px; text-align: center; padding: 6px; }
+  .card.name b { font-size: 15px; }
+  .card.name small { color: var(--muted); font-size: 11px; }
+  .card.photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card.book, .card.achievement { padding: 8px; font-size: 12px; }
+  .card.book div { margin-bottom: 5px; }
+  .card.achievement ul { margin: 0; padding-left: 1.1em; }
+  .card.achievement li { margin-bottom: 5px; }
+
+  #board { display: grid; grid-template-columns: repeat(4, var(--w)) 1.6rem; gap: 8px; margin-bottom: 28px; }
+  /* border だとカードが枠線のぶん内側にずれるので、レイアウトを占有しない outline で描く */
+  .slot {
+    width: var(--w); height: var(--h); border-radius: 10px;
+    outline: 2px dashed var(--line); outline-offset: -2px;
+  }
+  .slot:has(.card) { outline-color: transparent; }
+  /* ドロップ先の強調は埋まった枠にも出すので :has より後に置く */
+  .slot.over { outline-color: var(--accent); outline-style: solid; }
+  .verdict { display: grid; place-items: center; font-size: 20px; font-weight: 700; }
+  .verdict.ok { color: var(--ok); }
+  .verdict.ng { color: var(--ng); }
+
+  #pool {
+    position: sticky; bottom: 0; z-index: 1;
+    padding-top: 8px; background: var(--bg);
+    box-shadow: 0 -6px 16px rgb(0 0 0 / 8%);
+  }
+  #poolTabs { display: flex; gap: 6px; margin-bottom: 6px; }
+  #poolTabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+  #poolTabs small { color: var(--muted); font-weight: 400; margin-left: 4px; }
+
+  #tray {
+    display: flex; gap: 8px; overflow-x: auto;
+    min-height: calc(var(--h) + 16px); padding: 8px;
+    border: 2px dashed var(--line); border-radius: 12px;
+  }
+  #tray .card { flex: none; }
+  /* 空でもカードを戻せるよう、潰さず薄く残す */
+  #tray:empty { min-height: 40px; }
+  #tray.over { border-color: var(--accent); border-style: solid; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="titlebar">
+    <h1>アジャイル人物マップ</h1>
+    <nav>
+      <a href="study.html">学習</a>
+      <a href="https://github.com/wai-doi/agile-people-map" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+  <p>同じ人物のカードが横一列に並ぶよう、下のカードを枠に入れてください。ドラッグでもタップでも動かせます。</p>
+  <div class="controls">
+    <button id="judge">判定する</button>
+    <button id="reveal">答えを見る</button>
+    <button id="newgame">シャッフル</button>
+    <span id="score"></span>
+  </div>
+</header>
+
+<main>
+  <div id="board"></div>
+  <div id="pool">
+    <div id="poolTabs" role="tablist"></div>
+    <div id="tray" data-pos="tray"></div>
+  </div>
+</main>
+
+<footer>
+  <p>出典: 人物・著書は <a href="https://en.wikipedia.org/">英語版Wikipedia</a>、邦題は <a href="https://ndlsearch.ndl.go.jp/">国立国会図書館サーチ</a> で確認。写真は Wikimedia Commons より、表示枠に合わせてトリミングしています。</p>
+  <ul id="credits"></ul>
+</footer>
+
+<script src="people.js"></script>
+<script>
+const COLUMNS = [
+  { kind: 'name',  label: '名前' },
+  { kind: 'photo', label: '写真' },
+  { kind: 'book',  label: '著書' },
+  { kind: 'achievement', label: 'やったこと' },
+];
+const ROUND_SIZE = 10;
+
+let round = [];     // この回に出す人物
+let pos = {};       // カードID -> 'tray' | 'r{行}c{列}'
+let verdicts = null; // 判定結果（行ごとに true/false/null）
+let selected = null; // タップ操作で選択中のカードID
+let trayKind = COLUMNS[0].kind; // プールで表示中の種類
+
+newGame();
+
+function newGame() {
+  round = shuffle(PEOPLE).slice(0, ROUND_SIZE);
+  // プール内の並び順は pos の挿入順で決まるので、種類ごとに人物をシャッフルしておく
+  const cards = COLUMNS.flatMap(col => shuffle(round).map(p => `${p.id}:${col.kind}`));
+  pos = Object.fromEntries(cards.map(id => [id, 'tray']));
+  verdicts = null;
+  selected = null;
+  trayKind = COLUMNS[0].kind;
+  document.getElementById('score').textContent = '';
+  render();
+}
+
+function grade() {
+  const at = {};
+  for (const [id, p] of Object.entries(pos)) at[p] = id;
+  return round.map((_, r) => {
+    const ids = COLUMNS.map((_, c) => at[`r${r}c${c}`]);
+    if (ids.some(id => !id)) return null;
+    return new Set(ids.map(id => id.split(':')[0])).size === 1;
+  });
+}
+
+function render() {
+  const board = document.getElementById('board');
+  const tray = document.getElementById('tray');
+  board.textContent = '';
+  tray.textContent = '';
+
+  for (const col of COLUMNS) board.append(el('div', 'collabel', col.label));
+  board.append(el('div'));
+
+  round.forEach((_, r) => {
+    COLUMNS.forEach((col, c) => {
+      const slot = el('div', 'slot');
+      slot.dataset.pos = `r${r}c${c}`;
+      slot.dataset.kind = col.kind;
+      board.append(slot);
+    });
+    const mark = el('div', 'verdict');
+    // 未入力の行（null）もスコア上は失点なので × に寄せる
+    if (verdicts) {
+      mark.classList.add(verdicts[r] ? 'ok' : 'ng');
+      mark.textContent = verdicts[r] ? '○' : '×';
+    }
+    board.append(mark);
+  });
+
+  for (const [id, p] of Object.entries(pos)) {
+    if (p === 'tray' && kindOf(id) !== trayKind) continue;
+    const card = cardFor(id);
+    if (id === selected) card.classList.add('sel');
+    (p === 'tray' ? tray : board.querySelector(`[data-pos="${p}"]`)).append(card);
+  }
+
+  renderTabs();
+}
+
+function renderTabs() {
+  const tabs = document.getElementById('poolTabs');
+  tabs.textContent = '';
+  for (const col of COLUMNS) {
+    const left = Object.entries(pos).filter(([id, p]) => p === 'tray' && kindOf(id) === col.kind).length;
+    const tab = el('button', '', col.label);
+    tab.append(el('small', '', String(left)));
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', col.kind === trayKind);
+    // 選択を持ち越すと、見えないカードを操作することになる
+    tab.onclick = () => { trayKind = col.kind; selected = null; render(); };
+    tabs.append(tab);
+  }
+}
+
+function kindOf(id) {
+  return id.split(':')[1];
+}
+
+function cardFor(id) {
+  const [pid, kind] = id.split(':');
+  const p = PEOPLE.find(x => x.id === pid);
+  const card = el('div', `card ${kind}`);
+  if (kind === 'name') {
+    card.append(el('b', '', p.name), el('small', '', p.nameJa));
+  } else if (kind === 'photo') {
+    card.append(photoImg(p));
+  } else if (kind === 'book') {
+    for (const b of p.books) card.append(el('div', '', `『${b}』`));
+  } else {
+    const list = el('ul');
+    for (const a of p.achievements) list.append(el('li', '', a));
+    card.append(list);
+  }
+  card.draggable = true;
+  card.dataset.id = id;
+  return card;
+}
+
+function shuffle(xs) {
+  const a = [...xs];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function place(id, to) {
+  const from = pos[id];
+  const occupant = to === 'tray' ? null : Object.keys(pos).find(k => pos[k] === to);
+  if (occupant) pos[occupant] = from;
+  pos[id] = to;
+  // プールに戻るカードが別タブに隠れないよう開く（列は種類固定なので occupant も同じ種類）
+  if (to === 'tray' || (occupant && from === 'tray')) trayKind = kindOf(id);
+  // 早期リターンにはしない。同じ場所へ置き直したときも選択解除を描画する必要がある
+  if (from !== to) {
+    verdicts = null;
+    document.getElementById('score').textContent = '';
+  }
+  render();
+}
+
+function zoneFor(node) {
+  return node.closest ? node.closest('.slot, #tray') : null;
+}
+
+function accepts(zone, id) {
+  return zone.id === 'tray' || zone.dataset.kind === kindOf(id);
+}
+
+let dragId = null;
+document.addEventListener('dragstart', e => {
+  const card = e.target.closest('.card');
+  if (!card) return;
+  dragId = card.dataset.id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragId);
+});
+document.addEventListener('dragover', e => {
+  const zone = zoneFor(e.target);
+  if (!zone || !dragId || !accepts(zone, dragId)) return;
+  e.preventDefault();
+  zone.classList.add('over');
+});
+document.addEventListener('dragleave', e => zoneFor(e.target)?.classList.remove('over'));
+document.addEventListener('drop', e => {
+  const zone = zoneFor(e.target);
+  if (!zone || !dragId || !accepts(zone, dragId)) return;
+  e.preventDefault();
+  zone.classList.remove('over');
+  // render() が元のカードを差し替えると dragend がドキュメントに届かないので、ここでも解除する
+  const id = dragId;
+  dragId = null;
+  place(id, zone.dataset.pos);
+});
+document.addEventListener('dragend', () => {
+  dragId = null;
+  document.querySelector('.over')?.classList.remove('over');
+});
+
+document.addEventListener('click', e => {
+  const card = e.target.closest('.card');
+  const zone = zoneFor(e.target);
+  if (!selected) {
+    if (card) { selected = card.dataset.id; render(); }
+    return;
+  }
+  if (card && card.dataset.id === selected) { selected = null; render(); return; }
+  if (zone && accepts(zone, selected)) {
+    const id = selected;
+    selected = null;
+    place(id, zone.dataset.pos);
+  }
+});
+
+document.getElementById('judge').onclick = () => {
+  verdicts = grade();
+  const ok = verdicts.filter(v => v === true).length;
+  document.getElementById('score').textContent = `${ok} / ${round.length} 正解`;
+  render();
+};
+
+document.getElementById('reveal').onclick = () => {
+  pos = Object.fromEntries(round.flatMap((p, r) =>
+    COLUMNS.map((col, c) => [`${p.id}:${col.kind}`, `r${r}c${c}`])));
+  // アプリが正解を並べた盤面で、利用者の答えではない。○×とスコアは消しておく
+  verdicts = null;
+  selected = null;
+  document.getElementById('score').textContent = '答えを表示しました';
+  render();
+};
+
+document.getElementById('newgame').onclick = newGame;
+
+renderCredits(document.getElementById('credits'));
+
+if (location.search.includes('selftest')) selftest();
+
+function selftest() {
+  const saved = [round, pos];
+  round = PEOPLE.slice(0, 2);
+  pos = {};
+  for (const p of round) for (const c of COLUMNS) pos[`${p.id}:${c.kind}`] = 'tray';
+  console.assert(grade().every(v => v === null), '未配置の行は判定しない');
+
+  COLUMNS.forEach((c, i) => { pos[`${round[0].id}:${c.kind}`] = `r0c${i}`; });
+  console.assert(grade()[0] === true, '同じ人物で4枚そろえば正解');
+
+  pos[`${round[0].id}:achievement`] = 'tray';
+  pos[`${round[1].id}:achievement`] = 'r0c3';
+  console.assert(grade()[0] === false, '1枚でも別人なら不正解');
+
+  [round, pos] = saved;
+  render();
+  console.log('selftest done');
+}
+</script>
+</body>
+</html>
